@@ -14,30 +14,90 @@ const RSA_KEY_TYPE: &str = "RSA";
 const RSA_PKCS15_ALGORITHM: &str = "RSA1_5";
 const RSA_OAEP_ALGORITHM: &str = "RSA-OAEP";
 
-/// A minimally simple key-value store where the lookup keys are strings and the values
-/// are byte arrays (octet vectors).
-///
-/// The byte arrays are typically intended to be encryption keys, which is why this
-/// structure is called a "key store", so take care not to confuse the lookup keys
-/// (which are strings) with the values, since the term "key" can be ambiguous.
-///
-/// The byte arrays do not necessarily need to be encryption keys. They could be other small
-/// secret data blobs. However, whatever they are, they should be small, because they
-/// are treated using asymmetric encryption methods. Do not store very large data
-/// blobs in this store. It is only intended to demonstrate the retrieval of secrets
-/// in confidential computing contexts.
-///
-/// Data is never revealed in plaintext - only the `wrap()` function is used, which
-/// encrypts data with a given public key.
-pub struct KeyStore {
+/// Trait defining the interface for key management operations
+pub trait KeyManager: Send + Sync {
+    /// Retrieve a key from the key manager
+    fn get_key(&self, key_id: &str) -> Result<Vec<u8>>;
+    
+    /// Store a key in the key manager
+    fn store_key(&mut self, key_id: &str, data: Vec<u8>) -> Result<()>;
+}
+
+/// Implementation of an in-memory key manager
+pub struct InMemoryKeyManager {
     keys: HashMap<String, Vec<u8>>,
 }
 
-impl KeyStore {
-    /// Create a new, empty key store
-    pub fn new() -> KeyStore {
-        KeyStore {
+impl InMemoryKeyManager {
+    pub fn new() -> Self {
+        Self {
             keys: HashMap::new(),
+        }
+    }
+}
+
+impl KeyManager for InMemoryKeyManager {
+    fn get_key(&self, key_id: &str) -> Result<Vec<u8>> {
+        self.keys
+            .get(key_id)
+            .cloned()
+            .ok_or(crate::error::Error::KeyStore(
+                crate::error::KeyStoreErrorKind::KeyNotFound,
+            ))
+    }
+
+    fn store_key(&mut self, key_id: &str, data: Vec<u8>) -> Result<()> {
+        self.keys.insert(key_id.to_owned(), data);
+        Ok(())
+    }
+}
+
+/// Hashicorp Vault key manager implementation
+pub struct HashicorpKeyManager {
+    // TODO: Add fields for Vault configuration
+    // vault_addr: String,
+    // vault_token: String,
+    // vault_path: String,
+}
+
+impl HashicorpKeyManager {
+    pub fn new(/*vault_addr: String, vault_token: String, vault_path: String*/) -> Self {
+        Self {
+            // TODO: Initialize Vault client configuration
+        }
+    }
+}
+
+impl KeyManager for HashicorpKeyManager {
+    fn get_key(&self, key_id: &str) -> Result<Vec<u8>> {
+        // TODO: Implement Vault key retrieval
+        // For now, return a mock key for testing
+        Ok(b"mock_vault_key".to_vec())
+    }
+
+    fn store_key(&mut self, key_id: &str, data: Vec<u8>) -> Result<()> {
+        // TODO: Implement Vault key storage
+        Ok(())
+    }
+}
+
+/// A minimally simple key store that supports multiple key manager backends.
+/// The key store handles the wrapping (encryption) of keys retrieved from the
+/// configured key manager.
+pub struct KeyStore {
+    key_manager: Box<dyn KeyManager>,
+}
+
+impl KeyStore {
+    /// Create a new key store with the specified key manager
+    pub fn new(key_manager: Box<dyn KeyManager>) -> KeyStore {
+        KeyStore { key_manager }
+    }
+
+    /// Create a new key store with the default in-memory key manager
+    pub fn new_in_memory() -> KeyStore {
+        KeyStore {
+            key_manager: Box::new(InMemoryKeyManager::new()),
         }
     }
 
@@ -47,8 +107,8 @@ impl KeyStore {
     /// function that is only used by the internals of the key broker to build the contents
     /// of the store from trusted internal sources, such as command-line arguments or a local
     /// configuration file.
-    pub fn store_key(&mut self, key_id: &str, data: Vec<u8>) {
-        self.keys.insert(key_id.to_owned(), data.clone());
+    pub fn store_key(&mut self, key_id: &str, data: Vec<u8>) -> Result<()> {
+        self.key_manager.store_key(key_id, data)
     }
 
     /// Obtain a wrapped (encrypted) data item from the store.
@@ -69,31 +129,24 @@ impl KeyStore {
         let e = BigUint::from_bytes_be(&k_exp);
 
         let mut rng = rand::thread_rng();
-
         let rsa_pub_key = RsaPublicKey::new(n, e)?;
 
-        if let Some(entry) = self.keys.get_key_value(key_id) {
-            let (_k, data) = entry;
-            let wrapped_data = {
-                if wrapping_key.alg == *RSA_PKCS15_ALGORITHM {
-                    rsa_pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, data)
-                } else if wrapping_key.alg == *RSA_OAEP_ALGORITHM {
-                    let padding = Oaep::new::<Sha256>();
-                    rsa_pub_key.encrypt(&mut rng, padding, data)
-                } else {
-                    return Err(crate::error::Error::KeyStore(
-                        crate::error::KeyStoreErrorKind::UnsupportedWrappingKeyAlgorithm,
-                    ));
-                }
-            }?;
-            let data_base64 = URL_SAFE_NO_PAD.encode(wrapped_data);
-            let retobj = WrappedKeyData { data: data_base64 };
-            Ok(retobj)
-        } else {
-            Err(crate::error::Error::KeyStore(
-                crate::error::KeyStoreErrorKind::KeyNotFound,
-            ))
-        }
+        let data = self.key_manager.get_key(key_id)?;
+        let wrapped_data = {
+            if wrapping_key.alg == *RSA_PKCS15_ALGORITHM {
+                rsa_pub_key.encrypt(&mut rng, Pkcs1v15Encrypt, &data)
+            } else if wrapping_key.alg == *RSA_OAEP_ALGORITHM {
+                let padding = Oaep::new::<Sha256>();
+                rsa_pub_key.encrypt(&mut rng, padding, &data)
+            } else {
+                return Err(crate::error::Error::KeyStore(
+                    crate::error::KeyStoreErrorKind::UnsupportedWrappingKeyAlgorithm,
+                ));
+            }
+        }?;
+
+        let data_base64 = URL_SAFE_NO_PAD.encode(wrapped_data);
+        Ok(WrappedKeyData { data: data_base64 })
     }
 }
 
@@ -103,12 +156,14 @@ mod tests {
     use rsa::{traits::PublicKeyParts, RsaPrivateKey};
 
     fn key_store_round_trip(kty: &str, alg: &str) {
-        let mut store = KeyStore::new();
+        let mut store = KeyStore::new_in_memory();
 
         // Put a key into the store
         let key_id = "skywalker";
         let key_content = "May the force be with you.";
-        store.store_key(key_id, key_content.as_bytes().to_vec());
+        store
+            .store_key(key_id, key_content.as_bytes().to_vec())
+            .expect("Failed to store key");
 
         // Create an ephemeral wrapping key-pair
         let mut rng = rand::thread_rng();

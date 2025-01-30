@@ -247,7 +247,7 @@ async fn main() -> std::io::Result<()> {
         .init()
         .unwrap();
 
-    let mut keystore = KeyStore::new();
+    let mut keystore = KeyStore::new_in_memory();
     let challenger = Challenger::new();
 
     // TODO: Just storing one hard-coded item in the store. Would be better to read from an input file.
