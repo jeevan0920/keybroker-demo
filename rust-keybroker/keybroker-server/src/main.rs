@@ -8,7 +8,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use challenge::Challenger;
 use clap::Parser;
-use keybroker_common::{AttestationChallenge, BackgroundCheckKeyRequest, ErrorInformation};
+use keybroker_common::{AttestationChallenge, BackgroundCheckKeyRequest, ErrorInformation, PassportKeyRequest};
 use keystore::KeyStore;
 use std::path::PathBuf;
 use verifier::{CcaDiagnostics, Verifier};
@@ -182,6 +182,68 @@ async fn submit_evidence(
     }
 }
 
+// Add new endpoint for passport-based key requests
+#[post("/key/passport/{keyid}")]
+async fn request_key_with_passport(
+    path: web::Path<String>,
+    data: web::Data<ServerState>,
+    key_request: web::Json<PassportKeyRequest>,
+) -> impl Responder {
+    let key_id = path.into_inner();
+
+    // Verify the passport locally using the verifier
+    let verifier = Verifier {
+        base_url: data.args.verifier.clone(),
+        root_certificate: data.args.verifier_root_certificate.clone(),
+    };
+
+    let verification_result = verifier.verify_passport(
+        &key_request.passport,
+        &data.args.reference_values,
+        &CcaDiagnostics::new(data.args.verbosity),
+    );
+
+    match verification_result {
+        Ok(verified) => {
+            if verified {
+                // If passport is valid, wrap and return the key immediately
+                let keystore = data.keystore.lock().expect("Poisoned keystore lock.");
+                let data = keystore.wrap_key(&key_id, &key_request.pubkey);
+
+                match data {
+                    Ok(wrapped_key) => {
+                        log::info!(
+                            "Passport verification succeeded for key_id: {}",
+                            key_id
+                        );
+                        HttpResponse::Ok().json(wrapped_key)
+                    }
+                    Err(e) => {
+                        let error_info = ErrorInformation {
+                            r#type: "KeyWrapFailure".to_string(),
+                            detail: format!("Failed to wrap key: {}", e),
+                        };
+                        HttpResponse::InternalServerError().json(error_info)
+                    }
+                }
+            } else {
+                let error_info = ErrorInformation {
+                    r#type: "PassportVerificationFailure".to_string(),
+                    detail: "The passport verification failed.".to_string(),
+                };
+                HttpResponse::Forbidden().json(error_info)
+            }
+        }
+        Err(e) => {
+            let error_info = ErrorInformation {
+                r#type: "PassportVerificationError".to_string(),
+                detail: format!("Error verifying passport: {}", e),
+            };
+            HttpResponse::BadRequest().json(error_info)
+        }
+    }
+}
+
 /// Structure for parsing and storing the command-line arguments
 #[derive(Clone, Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -271,6 +333,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         let scope = web::scope("/keys/v1")
             .service(request_key)
+            .service(request_key_with_passport)
             .service(submit_evidence);
         App::new().app_data(app_data.clone()).service(scope)
     })

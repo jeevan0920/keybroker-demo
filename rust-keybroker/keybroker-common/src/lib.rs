@@ -93,3 +93,11 @@ pub struct WrappedKeyData {
     /// resulting vector of bytes in order to obtain the secret data payload.
     pub data: String,
 }
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct PassportKeyRequest {
+    /// The public key to use for wrapping the key data
+    pub pubkey: PublicWrappingKey,
+    /// The passport (pre-verified attestation token)
+    pub passport: String,
+}

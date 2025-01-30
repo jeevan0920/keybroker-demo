@@ -180,3 +180,65 @@ pub fn verify_with_veraison_instance<DE: EmitDiagnostic>(
 
     Ok(results.to_string() == "true")
 }
+
+impl Verifier {
+    // Add method to verify passports
+    pub fn verify_passport<DE: EmitDiagnostic>(
+        &self,
+        passport: &str,
+        reference_values: &Option<String>,
+        diagnostics: &DE,
+    ) -> Result<bool> {
+        // Get the verification API configuration for local verification
+        let mut discovery = DiscoveryBuilder::new().with_base_url(self.base_url.clone());
+
+        if self.root_certificate.is_some() {
+            discovery = discovery.with_root_certificate(self.root_certificate.clone().unwrap());
+        }
+
+        let discovery_endpoint = discovery.build()?;
+        let verification_api = discovery_endpoint.get_verification_api()?;
+
+        // Get the verification key for passport validation
+        let verification_key_string = verification_api.ear_verification_key_as_string();
+
+        // Parse and verify the passport (which is an EAR token)
+        let ear = Ear::from_jwt_jwk(
+            passport,
+            Algorithm::ES256,
+            verification_key_string.as_bytes(),
+        )?;
+
+        if diagnostics.verbosity() > 0 {
+            log::info!("Verifying passport with profile: {}", ear.profile);
+        }
+
+        // Convert EAR to claims for policy evaluation
+        let ear_claims = serde_json::to_string(&ear)?;
+
+        // Get the appropriate policy based on the EAR profile
+        // Note: You might want to add specific passport policies to the MEDIATYPES_TO_POLICY map
+        let media_type = format!("application/eat-collection; profile={}", ear.profile);
+        let (policy, policy_rule) = policy::MEDIATYPES_TO_POLICY
+            .get(&media_type)
+            .ok_or(VerificationErrorKind::PolicyNotFound)?;
+
+        // Ensure we have reference values
+        if reference_values.is_none() {
+            diagnostics.emit_no_reference_values(&0, &ear)?; // Using 0 as there's no challenge ID for passports
+            return Err(Error::Verification(
+                VerificationErrorKind::NoReferenceValues,
+            ));
+        }
+
+        // Evaluate the passport against policy
+        let results = policy::rego_eval(
+            policy,
+            policy_rule,
+            reference_values.as_ref().unwrap(),
+            &ear_claims,
+        )?;
+
+        Ok(results.to_string() == "true")
+    }
+}
