@@ -18,6 +18,10 @@ struct Args {
     #[arg(short, long, default_value_t = false)]
     mock_evidence: bool,
 
+    /// Use a pre-generated passport instead of live attestation
+    #[arg(short, long)]
+    passport: Option<String>,
+
     /// Increase verbosity
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbosity: u8,
@@ -41,25 +45,31 @@ fn main() {
 
     let client = KeyBrokerClient::new(&args.endpoint);
 
-    let attestation_result = if args.mock_evidence {
-        client.get_key(&args.key_name, &CcaExampleToken {})
+    let result = if let Some(passport) = args.passport {
+        // Use passport-based verification if a passport is provided
+        client.get_key_with_passport(&args.key_name, &passport)
     } else {
-        client.get_key(&args.key_name, &TsmAttestationReport {})
+        // Otherwise use traditional challenge-response attestation
+        if args.mock_evidence {
+            client.get_key(&args.key_name, &CcaExampleToken {})
+        } else {
+            client.get_key(&args.key_name, &TsmAttestationReport {})
+        }
     };
 
     // If the attestation was successful, print the key we got from the keybroker and exit with code 0.
     // If the attestation failed for genuine attestation related error, print the reason and exit with code 1.
     // For any other kind of error (crypto, network connectivity, ...), print an hopefully useful message to diagnose the issue and exit with code 2.
-    let code = match attestation_result {
+    let code = match result {
         Ok(key) => {
             let plainstring_key = String::from_utf8(key).unwrap();
-            log::info!("Attestation success :-) ! The key returned from the keybroker is '{plainstring_key}'");
+            log::info!("Key retrieval success :-) ! The key returned from the keybroker is '{plainstring_key}'");
             0
         }
 
         Err(error) => {
             if let KeybrokerError::AttestationFailure(reason, details) = error {
-                log::info!("Attestation failure :-( ! {reason}: {details}");
+                log::info!("Attestation/passport verification failure :-( ! {reason}: {details}");
                 1
             } else {
                 log::error!("The key request failed with: {error:?}");

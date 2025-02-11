@@ -4,7 +4,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::prelude::*;
 use keybroker_common::{
-    BackgroundCheckKeyRequest, ErrorInformation, PublicWrappingKey, WrappedKeyData,
+    BackgroundCheckKeyRequest, ErrorInformation, PublicWrappingKey, WrappedKeyData, PassportKeyRequest,
 };
 use reqwest::StatusCode;
 use rsa::{traits::PublicKeyParts, BigUint, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
@@ -438,6 +438,104 @@ impl KeyBrokerClient {
                 ))),
             },
             other => other,
+        }
+    }
+
+    /// Get a key using a pre-generated passport instead of live attestation.
+    /// This is a more efficient single-call API compared to the challenge-response flow.
+    pub fn get_key_with_passport(
+        self: &KeyBrokerClient,
+        key_name: &str,
+        passport: &str,
+    ) -> Result<Vec<u8>> {
+        // Create an ephemeral wrapping key-pair for our own use
+        let mut rng = rand::thread_rng();
+        let priv_key = RsaPrivateKey::new(&mut rng, 1024 /* bits */)
+            .expect("Failed to generate ephemeral wrapping key.");
+        let pub_key = RsaPublicKey::from(&priv_key);
+
+        // Create base64 strings for the public key modulus and exponent parts
+        let k_mod_base64 = URL_SAFE_NO_PAD.encode(BigUint::to_bytes_be(pub_key.n()));
+        let k_exp_base64 = URL_SAFE_NO_PAD.encode(BigUint::to_bytes_be(pub_key.e()));
+
+        // Construct the passport key request
+        let key_request = PassportKeyRequest {
+            pubkey: PublicWrappingKey {
+                kty: "RSA".to_string(),
+                alg: "RSA1_5".to_string(),
+                n: k_mod_base64,
+                e: k_exp_base64,
+            },
+            passport: passport.to_string(),
+        };
+
+        // Construct the URL for the passport-based key request
+        let key_request_url = format!("{}/keys/v1/key/passport/{}", self.keybroker_url_base, key_name);
+
+        log::info!(
+            "Requesting key named '{key_name}' using passport from the keybroker server with URL {key_request_url}"
+        );
+
+        // Make the API call to request the key using the passport
+        match self.client.post(&key_request_url).json(&key_request).send() {
+            Ok(resp) => {
+                match resp.status() {
+                    StatusCode::OK => {
+                        let wrapped_data = match resp.json::<WrappedKeyData>() {
+                            Ok(wrapped_data) => wrapped_data,
+                            Err(error) => {
+                                return Err(KeybrokerError::RuntimeError(
+                                    RuntimeErrorKind::JSONDeserialize(
+                                        "the wrapped key data".to_string(),
+                                        format!("{error:?}"),
+                                    ),
+                                ))
+                            }
+                        };
+                        match URL_SAFE_NO_PAD.decode(wrapped_data.data) {
+                            Ok(ciphertext) => match priv_key.decrypt(Pkcs1v15Encrypt, &ciphertext) {
+                                Ok(plaintext) => Ok(plaintext),
+                                Err(error) => Err(KeybrokerError::RuntimeError(
+                                    RuntimeErrorKind::Decrypt(
+                                        "ciphertext".to_string(),
+                                        format!("{error:?}"),
+                                    ),
+                                )),
+                            },
+                            Err(error) => Err(KeybrokerError::RuntimeError(
+                                RuntimeErrorKind::Base64Decode(
+                                    "the wrapped key data".to_string(),
+                                    format!("{error:?}"),
+                                ),
+                            )),
+                        }
+                    }
+                    StatusCode::FORBIDDEN => {
+                        let error_info = match resp.json::<ErrorInformation>() {
+                            Ok(error_info) => error_info,
+                            Err(error) => {
+                                return Err(KeybrokerError::RuntimeError(
+                                    RuntimeErrorKind::JSONDeserialize(
+                                        "the error information".to_string(),
+                                        format!("{error:?}"),
+                                    ),
+                                ))
+                            }
+                        };
+                        Err(KeybrokerError::AttestationFailure(
+                            error_info.r#type,
+                            error_info.detail,
+                        ))
+                    }
+                    status => Err(KeybrokerError::RuntimeError(
+                        RuntimeErrorKind::HTTPResponse(format!("{status:?}")),
+                    )),
+                }
+            }
+            Err(error) => Err(KeybrokerError::RuntimeError(RuntimeErrorKind::HTTPConnect(
+                key_request_url,
+                format!("{error:?}"),
+            ))),
         }
     }
 }

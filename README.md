@@ -61,6 +61,29 @@ Options:
           Print version
 ```
 
+### Key Request Methods
+
+The keybroker supports two methods for requesting keys:
+
+1. **Challenge-Response Attestation** (Traditional Flow):
+   ```console
+   $ target/debug/keybroker-app -v skywalker
+   INFO Requesting key named 'skywalker' from the keybroker server with URL http://127.0.0.1:8088/keys/v1/key/skywalker
+   INFO Submitting evidence to URL http://127.0.0.1:8088/keys/v1/evidence/1923965078
+   INFO Attestation success :-) ! The key returned from the keybroker is 'May the force be with you.'
+   ```
+
+2. **Passport-based Verification** (Streamlined Flow):
+   ```console
+   $ target/debug/keybroker-app -v --passport <passport-string> skywalker
+   INFO Requesting key named 'skywalker' using passport from the keybroker server with URL http://127.0.0.1:8088/keys/v1/key/passport/skywalker
+   INFO Key retrieval success :-) ! The key returned from the keybroker is 'May the force be with you.'
+   ```
+
+The passport-based method is more efficient as it requires only a single API call, using a pre-generated attestation passport.
+
+### Mock Mode
+
 The simplest way to get started with `keybroker-server` and `keybroker-app` is
 to run them locally in _mocking_ mode (i.e they make use of statically known
 values).
@@ -74,19 +97,15 @@ INFO Actix runtime found; starting in Actix runtime
 INFO starting service: "actix-web-service-127.0.0.1:8088", workers: 11, listening on: 127.0.0.1:8088
 ```
 
-In another terminal, launch `keybroker-app` with:
+In another terminal, launch `keybroker-app` with either method:
 
 ```console
+# Using traditional challenge-response flow
 $ target/debug/keybroker-app -v -m skywalker
-INFO Requesting key named 'skywalker' from the keybroker server with URL http://127.0.0.1:8088/keys/v1/key/skywalker
-INFO Submitting evidence to URL http://127.0.0.1:8088/keys/v1/evidence/1923965078
-INFO Attestation success :-) ! The key returned from the keybroker is 'May the force be with you.'
-```
 
-`keybroker-app` is requesting the key named `skywalker` from `keybroker-server`.
-As we are in _mocking_ mode with statically known challenges and evidences, the
-attestation succeeds: `keyboker-app` receives the key `May the force be with
-you.` from `keybroker-server`.
+# Or using passport-based verification
+$ target/debug/keybroker-app -v --passport <passport-string> skywalker
+```
 
 ## Logging
 
