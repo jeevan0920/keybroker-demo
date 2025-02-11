@@ -9,7 +9,7 @@ use base64::prelude::*;
 use challenge::Challenger;
 use clap::Parser;
 use keybroker_common::{AttestationChallenge, BackgroundCheckKeyRequest, ErrorInformation, PassportKeyRequest};
-use keystore::KeyStore;
+use keystore::{HashicorpKeyManager, KeyStore};
 use std::path::PathBuf;
 use verifier::{CcaDiagnostics, Verifier};
 mod challenge;
@@ -308,15 +308,14 @@ async fn main() -> std::io::Result<()> {
         .verbosity(1 + usize::from(args.verbosity))
         .init()
         .unwrap();
-
-    let mut keystore = KeyStore::new_in_memory();
+    let mut keystore = KeyStore::new(Box::new(HashicorpKeyManager::new()));
     let challenger = Challenger::new();
 
     // TODO: Just storing one hard-coded item in the store. Would be better to read from an input file.
     keystore.store_key(
         "skywalker",
         "May the force be with you.".as_bytes().to_vec(),
-    );
+    ).expect("Failed to store key");
 
     let server_state = ServerState {
         args: args.clone(),
