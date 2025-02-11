@@ -32,6 +32,19 @@ The following contains reference values for three trusted workloads:
 }
 ```
 
+## Key Request APIs
+
+The keybroker server supports two methods for requesting keys:
+
+1. **Challenge-Response Attestation** (`/keys/v1/key/{keyid}`):
+   - Traditional flow where the server issues a challenge that must be answered with attestation evidence
+   - Requires two API calls: one to get the challenge and another to submit the evidence
+
+2. **Passport-based Verification** (`/keys/v1/key/passport/{keyid}`):
+   - Streamlined flow using a pre-generated attestation passport
+   - Single API call where the passport is verified immediately
+   - Returns the wrapped key directly if the passport is valid
+
 ### Mock mode
 
 In "mock" mode, the keybroker server must be started using the following command line:
